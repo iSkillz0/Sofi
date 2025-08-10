@@ -124,15 +124,21 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Selection logic with AO priority and V card highest priority
-      let bestCard;
-      const vCards = cards.filter(c => c.genType.toLowerCase() === 'v');
+      // Separate AO cards for clicking later
       const aoCards = cards.filter(c => c.cardName.toLowerCase() === 'ao');
+
+      // Filter out AO cards for best card selection
+      const nonAoCards = cards.filter(c => c.cardName.toLowerCase() !== 'ao');
+
+      let bestCard;
+
+      // Select best card only from non-AO cards:
+      const vCards = nonAoCards.filter(c => c.genType.toLowerCase() === 'v');
 
       if (vCards.length > 0) {
         bestCard = vCards[0];
-      } else if (aoCards.length > 0) {
-        const otherPriorityCards = cards.filter(c => c.cardName.toLowerCase() !== 'ao' && (c.gen < 50 || c.hearts > 200));
+      } else {
+        const otherPriorityCards = nonAoCards.filter(c => c.gen < 50 || c.hearts > 200);
 
         if (otherPriorityCards.length > 0) {
           bestCard = otherPriorityCards.sort((a, b) => {
@@ -140,21 +146,26 @@ client.on('messageCreate', async (message) => {
             return a.gen - b.gen;
           })[0];
         } else {
-          bestCard = aoCards[0];
+          const highHeartCards = nonAoCards.filter(c => c.hearts > 70);
+          if (highHeartCards.length > 0) {
+            bestCard = highHeartCards.sort((a, b) => {
+              if (b.hearts !== a.hearts) return b.hearts - a.hearts;
+              return a.gen - b.gen;
+            })[0];
+          } else {
+            bestCard = nonAoCards.sort((a, b) => {
+              if (a.gen !== b.gen) return a.gen - b.gen;
+              return a.button - b.button;
+            })[0];
+          }
         }
-      } else {
-        const highHeartCards = cards.filter(c => c.hearts > 70);
-        if (highHeartCards.length > 0) {
-          bestCard = highHeartCards.sort((a, b) => {
-            if (b.hearts !== a.hearts) return b.hearts - a.hearts;
-            return a.gen - b.gen;
-          })[0];
-        } else {
-          bestCard = cards.sort((a, b) => {
-            if (a.gen !== b.gen) return a.gen - b.gen;
-            return a.button - b.button;
-          })[0];
-        }
+      }
+
+      if (!bestCard) {
+        console.log('[WARN] No best card found (all cards may be AO?). Skipping.');
+        lastButtonMessage = null;
+        lastSDMessage = null;
+        return;
       }
 
       console.log(`Selected -> Button: ${bestCard.button}, Hearts: ${bestCard.hearts}, GenType: ${bestCard.genType}${bestCard.gen}`);
@@ -167,7 +178,7 @@ client.on('messageCreate', async (message) => {
       ) || (
         bestCard.hearts > 200
       ) || (
-        bestCard.cardName.toLowerCase() === 'ao'   // Log AO cards too
+        bestCard.cardName.toLowerCase() === 'ao'   // (rare now since AO excluded but kept for safety)
       );
 
       if (shouldLog && WEBHOOK_URL) {
@@ -182,6 +193,7 @@ client.on('messageCreate', async (message) => {
       const allButtons = lastButtonMessage.components.flatMap(row => row.components || []);
       const interactiveButtons = allButtons.filter(b => b && b.customId);
 
+      // Click best card button first
       const targetIndex = Math.max(0, bestCard.button - 1);
       let chosenButton = interactiveButtons[targetIndex];
 
@@ -191,8 +203,34 @@ client.on('messageCreate', async (message) => {
       }
 
       const randomDelay = Math.floor(Math.random() * (800 - 300 + 1)) + 300;
+
       setTimeout(async () => {
         await clickButtonFromComponent(lastButtonMessage, chosenButton);
+        console.log(`Clicked best card button: ${bestCard.cardName}`);
+
+        // Click all AO cards except if AO is already best card (excluded above)
+        if (aoCards.length > 0) {
+          console.log(`Found ${aoCards.length} AO card(s), will click all with delays.`);
+
+          for (let i = 0; i < aoCards.length; i++) {
+            const aoCard = aoCards[i];
+            const aoButtonIndex = Math.max(0, aoCard.button - 1);
+            const aoButton = interactiveButtons[aoButtonIndex];
+
+            if (aoButton) {
+              const aoDelay = 2000 + Math.floor(Math.random() * 1000); // 2-3 sec delay
+              console.log(`Waiting ${aoDelay}ms before clicking AO card button (${aoCard.cardName}) #${i + 1}`);
+
+              await new Promise(res => setTimeout(res, aoDelay));
+
+              await clickButtonFromComponent(lastButtonMessage, aoButton);
+              console.log(`Clicked AO card button #${i + 1}: ${aoCard.cardName}`);
+            } else {
+              console.log(`[WARN] AO card button not found for AO card #${i + 1}`);
+            }
+          }
+        }
+
         lastButtonMessage = null;
         lastSDMessage = null;
       }, randomDelay);
