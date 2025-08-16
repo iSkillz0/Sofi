@@ -102,18 +102,25 @@ client.on('messageCreate', async (message) => {
         const cleanLine = line.replace(/`/g, '').trim();
 
         const buttonMatch = cleanLine.match(/(\d)\]/);
-        const heartMatch = cleanLine.match(/:heart:\s*(\d+)/);
-        const genMatch = cleanLine.match(/([vɢ])\s*(\d+)/i);
+        const heartMatch = cleanLine.match(/:heart:\s*(\d*)/); // allow empty hearts
+        const genMatch = cleanLine.match(/([vɢ])\s*(\d*)/i);   // allow empty gen
         const nameMatch = cleanLine.match(/\*\*(.*?)\*\*/);
         const animeMatch = (cleanLine.split('•') || []).slice(-1)[0]?.trim();
 
-        if (buttonMatch && heartMatch && genMatch) {
+        if (buttonMatch && nameMatch) {
           const button = parseInt(buttonMatch[1]);
-          const hearts = parseInt(heartMatch[1]);
-          const genType = genMatch[1];
-          const gen = parseInt(genMatch[2]);
+          const hearts = heartMatch && heartMatch[1] ? parseInt(heartMatch[1]) : 0;
+          const genType = genMatch ? genMatch[1] : '?';
+          const gen = genMatch && genMatch[2] ? parseInt(genMatch[2]) : 9999;
 
-          cards.push({ button, hearts, gen, genType, cardName: nameMatch?.[1] || 'Unknown', animeName: animeMatch || 'Unknown' });
+          cards.push({
+            button,
+            hearts,
+            gen,
+            genType,
+            cardName: nameMatch[1],
+            animeName: animeMatch || 'Unknown'
+          });
         }
       }
 
@@ -124,116 +131,91 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Separate AO cards for clicking later
-      const aoCards = cards.filter(c => c.cardName.toLowerCase() === 'ao');
+      // Separate Shell cards and normal cards
+      const shellCards = cards.filter(c => c.cardName.toLowerCase() === 'shell');
+      const nonShellCards = cards.filter(c => c.cardName.toLowerCase() !== 'shell');
 
-      // Filter out AO cards for best card selection
-      const nonAoCards = cards.filter(c => c.cardName.toLowerCase() !== 'ao');
+      let bestCard = null;
 
-      let bestCard;
+      if (nonShellCards.length > 0) {
+        // Select best card only from non-Shell cards
+        const vCards = nonShellCards.filter(c => c.genType.toLowerCase() === 'v');
 
-      // Select best card only from non-AO cards:
-      const vCards = nonAoCards.filter(c => c.genType.toLowerCase() === 'v');
-
-      if (vCards.length > 0) {
-        bestCard = vCards[0];
-      } else {
-        const otherPriorityCards = nonAoCards.filter(c => c.gen < 50 || c.hearts > 200);
-
-        if (otherPriorityCards.length > 0) {
-          bestCard = otherPriorityCards.sort((a, b) => {
-            if (b.hearts !== a.hearts) return b.hearts - a.hearts;
-            return a.gen - b.gen;
-          })[0];
+        if (vCards.length > 0) {
+          bestCard = vCards[0];
         } else {
-          const highHeartCards = nonAoCards.filter(c => c.hearts > 70);
-          if (highHeartCards.length > 0) {
-            bestCard = highHeartCards.sort((a, b) => {
+          const otherPriorityCards = nonShellCards.filter(c => c.gen < 50 || c.hearts > 200);
+
+          if (otherPriorityCards.length > 0) {
+            bestCard = otherPriorityCards.sort((a, b) => {
               if (b.hearts !== a.hearts) return b.hearts - a.hearts;
               return a.gen - b.gen;
             })[0];
           } else {
-            bestCard = nonAoCards.sort((a, b) => {
-              if (a.gen !== b.gen) return a.gen - b.gen;
-              return a.button - b.button;
-            })[0];
+            const highHeartCards = nonShellCards.filter(c => c.hearts > 70);
+            if (highHeartCards.length > 0) {
+              bestCard = highHeartCards.sort((a, b) => {
+                if (b.hearts !== a.hearts) return b.hearts - a.hearts;
+                return a.gen - b.gen;
+              })[0];
+            } else {
+              bestCard = nonShellCards.sort((a, b) => {
+                if (a.gen !== b.gen) return a.gen - b.gen;
+                return a.button - b.button;
+              })[0];
+            }
           }
         }
       }
 
-      if (!bestCard) {
-        console.log('[WARN] No best card found (all cards may be AO?). Skipping.');
+      if (!bestCard && shellCards.length === 0) {
+        console.log('[WARN] No best card or Shell cards found. Skipping.');
         lastButtonMessage = null;
         lastSDMessage = null;
         return;
       }
 
-      console.log(`Selected -> Button: ${bestCard.button}, Hearts: ${bestCard.hearts}, GenType: ${bestCard.genType}${bestCard.gen}`);
-
-      // Webhook logging including AO cards
-      const shouldLog = (
-        bestCard.genType.toLowerCase() === 'ɢ' && bestCard.gen < 100 && bestCard.hearts > 100
-      ) || (
-        bestCard.genType.toLowerCase() === 'v'
-      ) || (
-        bestCard.hearts > 200
-      ) || (
-        bestCard.cardName.toLowerCase() === 'ao'   // (rare now since AO excluded but kept for safety)
-      );
-
-      if (shouldLog && WEBHOOK_URL) {
-        const content = `• ${client.user.username} • :heart: ${bestCard.hearts}   • ${bestCard.genType}${bestCard.gen}  • **${bestCard.cardName}** • ${bestCard.animeName} • [JUMP](https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id})`;
-        axios.post(WEBHOOK_URL, { content }).then(() => {
-          console.log('[WEBHOOK] Logged best card:', content);
-        }).catch(err => {
-          console.error('[WEBHOOK ERROR]', err.response?.data || err.message);
-        });
-      }
-
       const allButtons = lastButtonMessage.components.flatMap(row => row.components || []);
       const interactiveButtons = allButtons.filter(b => b && b.customId);
 
-      // Click best card button first
-      const targetIndex = Math.max(0, bestCard.button - 1);
-      let chosenButton = interactiveButtons[targetIndex];
+      // Click best card first if available
+      const doClicks = async () => {
+        if (bestCard) {
+          console.log(`Selected -> Button: ${bestCard.button}, Hearts: ${bestCard.hearts}, GenType: ${bestCard.genType}${bestCard.gen}`);
+          const targetIndex = Math.max(0, bestCard.button - 1);
+          let chosenButton = interactiveButtons[targetIndex] || interactiveButtons[0];
+          await clickButtonFromComponent(lastButtonMessage, chosenButton);
+          console.log(`Clicked best card button: ${bestCard.cardName}`);
+        }
 
-      if (!chosenButton) {
-        console.log('[WARN] target button not found by index, falling back to first interactive button');
-        chosenButton = interactiveButtons[0];
-      }
+        // Always click ALL Shell cards
+        if (shellCards.length > 0) {
+          console.log(`Found ${shellCards.length} Shell card(s), will click all with delays.`);
 
-      const randomDelay = Math.floor(Math.random() * (800 - 300 + 1)) + 300;
+          for (let i = 0; i < shellCards.length; i++) {
+            const shellCard = shellCards[i];
+            const shellButtonIndex = Math.max(0, shellCard.button - 1);
+            const shellButton = interactiveButtons[shellButtonIndex];
 
-      setTimeout(async () => {
-        await clickButtonFromComponent(lastButtonMessage, chosenButton);
-        console.log(`Clicked best card button: ${bestCard.cardName}`);
+            if (shellButton) {
+              const shellDelay = 1500 + Math.floor(Math.random() * 1000); // 1.5–2.5s delay
+              console.log(`Waiting ${shellDelay}ms before clicking Shell card button #${i + 1}`);
 
-        // Click all AO cards except if AO is already best card (excluded above)
-        if (aoCards.length > 0) {
-          console.log(`Found ${aoCards.length} AO card(s), will click all with delays.`);
-
-          for (let i = 0; i < aoCards.length; i++) {
-            const aoCard = aoCards[i];
-            const aoButtonIndex = Math.max(0, aoCard.button - 1);
-            const aoButton = interactiveButtons[aoButtonIndex];
-
-            if (aoButton) {
-              const aoDelay = 2000 + Math.floor(Math.random() * 1000); // 2-3 sec delay
-              console.log(`Waiting ${aoDelay}ms before clicking AO card button (${aoCard.cardName}) #${i + 1}`);
-
-              await new Promise(res => setTimeout(res, aoDelay));
-
-              await clickButtonFromComponent(lastButtonMessage, aoButton);
-              console.log(`Clicked AO card button #${i + 1}: ${aoCard.cardName}`);
+              await new Promise(res => setTimeout(res, shellDelay));
+              await clickButtonFromComponent(lastButtonMessage, shellButton);
+              console.log(`Clicked Shell card button #${i + 1}`);
             } else {
-              console.log(`[WARN] AO card button not found for AO card #${i + 1}`);
+              console.log(`[WARN] Shell card button not found for Shell card #${i + 1}`);
             }
           }
         }
 
         lastButtonMessage = null;
         lastSDMessage = null;
-      }, randomDelay);
+      };
+
+      const randomDelay = Math.floor(Math.random() * (800 - 300 + 1)) + 300;
+      setTimeout(doClicks, randomDelay);
     }
   } catch (err) {
     console.error('[UNEXPECTED]', err);
