@@ -9,6 +9,7 @@ const TOKEN = process.env.TOKEN;
 const NORI_BOT_ID = process.env.NORI_BOT_ID;
 const SOFI_BOT_ID = process.env.SOFI_BOT_ID;
 const CHANNEL_ID = process.env.CHANNEL;
+const WEBHOOK_URL = process.env.WEBHOOK;
 
 const WAIT_FILE = path.join(__dirname, 'wait.json');
 let waitData = {};
