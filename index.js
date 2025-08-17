@@ -64,7 +64,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // Cache Sofi button message by position (ignore labels/emojis/links)
+    // Cache Sofi button message
     if (
       message.author.id === SOFI_BOT_ID &&
       message.guild &&
@@ -86,7 +86,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // Nori summary — parse cards and decide which position to click
+    // Nori summary — parse and click
     if (
       message.author.id === NORI_BOT_ID &&
       message.guild &&
@@ -95,30 +95,30 @@ client.on('messageCreate', async (message) => {
       message.reference.messageId === lastSDMessage.id &&
       lastButtonMessage
     ) {
-      const lines = message.content.split('\n').filter(line => line.includes(':heart:'));
+      const lines = message.content.split('\n').filter(line => line.includes(']'));
       let cards = [];
 
       for (const line of lines) {
         const cleanLine = line.replace(/`/g, '').trim();
 
         const buttonMatch = cleanLine.match(/(\d)\]/);
-        const heartMatch = cleanLine.match(/:heart:\s*(\d*)/); // allow empty hearts
-        const genMatch = cleanLine.match(/([vɢ])\s*(\d*)/i);   // allow empty gen
+        const heartMatch = cleanLine.match(/:heart:\s*(\d*)/); // allow empty
+        const genMatch = cleanLine.match(/([vɢ])\s*(\d*)/i);
         const nameMatch = cleanLine.match(/\*\*(.*?)\*\*/);
         const animeMatch = (cleanLine.split('•') || []).slice(-1)[0]?.trim();
 
-        if (buttonMatch && nameMatch) {
+        if (buttonMatch && genMatch) {
           const button = parseInt(buttonMatch[1]);
-          const hearts = heartMatch && heartMatch[1] ? parseInt(heartMatch[1]) : 0;
-          const genType = genMatch ? genMatch[1] : '?';
-          const gen = genMatch && genMatch[2] ? parseInt(genMatch[2]) : 9999;
+          const hearts = heartMatch ? parseInt(heartMatch[1] || "0") : 0;
+          const genType = genMatch[1];
+          const gen = parseInt(genMatch[2] || "0");
 
           cards.push({
             button,
             hearts,
             gen,
             genType,
-            cardName: nameMatch[1],
+            cardName: nameMatch?.[1] || 'Unknown',
             animeName: animeMatch || 'Unknown'
           });
         }
@@ -131,91 +131,64 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Separate Shell cards and normal cards
+      // Shell + Non-Shell split
       const shellCards = cards.filter(c => c.cardName.toLowerCase() === 'shell');
       const nonShellCards = cards.filter(c => c.cardName.toLowerCase() !== 'shell');
 
-      let bestCard = null;
+      let bestCard;
 
-      if (nonShellCards.length > 0) {
-        // Select best card only from non-Shell cards
-        const vCards = nonShellCards.filter(c => c.genType.toLowerCase() === 'v');
-
-        if (vCards.length > 0) {
-          bestCard = vCards[0];
-        } else {
-          const otherPriorityCards = nonShellCards.filter(c => c.gen < 50 || c.hearts > 200);
-
-          if (otherPriorityCards.length > 0) {
-            bestCard = otherPriorityCards.sort((a, b) => {
-              if (b.hearts !== a.hearts) return b.hearts - a.hearts;
-              return a.gen - b.gen;
-            })[0];
-          } else {
-            const highHeartCards = nonShellCards.filter(c => c.hearts > 70);
-            if (highHeartCards.length > 0) {
-              bestCard = highHeartCards.sort((a, b) => {
-                if (b.hearts !== a.hearts) return b.hearts - a.hearts;
-                return a.gen - b.gen;
-              })[0];
-            } else {
-              bestCard = nonShellCards.sort((a, b) => {
-                if (a.gen !== b.gen) return a.gen - b.gen;
-                return a.button - b.button;
-              })[0];
-            }
-          }
+      // Priority 1: V-cards
+      const vCards = nonShellCards.filter(c => c.genType.toLowerCase() === 'v');
+      if (vCards.length > 0) {
+        bestCard = vCards[0];
+      } 
+      // Priority 2: high-heart cards
+      else {
+        const highHeartCards = nonShellCards.filter(c => c.hearts > 70);
+        if (highHeartCards.length > 0) {
+          bestCard = highHeartCards.sort((a, b) => b.hearts - a.hearts || a.gen - b.gen)[0];
+        } 
+        // Priority 3: fallback → lowest gen card
+        else if (nonShellCards.length > 0) {
+          bestCard = nonShellCards.sort((a, b) => a.gen - b.gen || a.button - b.button)[0];
         }
       }
 
-      if (!bestCard && shellCards.length === 0) {
-        console.log('[WARN] No best card or Shell cards found. Skipping.');
-        lastButtonMessage = null;
-        lastSDMessage = null;
-        return;
+      if (!bestCard && shellCards.length > 0) {
+        console.log('[INFO] Only Shell cards found, will click all of them.');
       }
 
       const allButtons = lastButtonMessage.components.flatMap(row => row.components || []);
       const interactiveButtons = allButtons.filter(b => b && b.customId);
 
-      // Click best card first if available
-      const doClicks = async () => {
-        if (bestCard) {
-          console.log(`Selected -> Button: ${bestCard.button}, Hearts: ${bestCard.hearts}, GenType: ${bestCard.genType}${bestCard.gen}`);
-          const targetIndex = Math.max(0, bestCard.button - 1);
-          let chosenButton = interactiveButtons[targetIndex] || interactiveButtons[0];
-          await clickButtonFromComponent(lastButtonMessage, chosenButton);
-          console.log(`Clicked best card button: ${bestCard.cardName}`);
-        }
-
-        // Always click ALL Shell cards
-        if (shellCards.length > 0) {
-          console.log(`Found ${shellCards.length} Shell card(s), will click all with delays.`);
-
-          for (let i = 0; i < shellCards.length; i++) {
-            const shellCard = shellCards[i];
-            const shellButtonIndex = Math.max(0, shellCard.button - 1);
-            const shellButton = interactiveButtons[shellButtonIndex];
-
-            if (shellButton) {
-              const shellDelay = 1500 + Math.floor(Math.random() * 1000); // 1.5–2.5s delay
-              console.log(`Waiting ${shellDelay}ms before clicking Shell card button #${i + 1}`);
-
-              await new Promise(res => setTimeout(res, shellDelay));
-              await clickButtonFromComponent(lastButtonMessage, shellButton);
-              console.log(`Clicked Shell card button #${i + 1}`);
-            } else {
-              console.log(`[WARN] Shell card button not found for Shell card #${i + 1}`);
-            }
+      const clickShells = async () => {
+        for (let i = 0; i < shellCards.length; i++) {
+          const sc = shellCards[i];
+          const scBtn = interactiveButtons[sc.button - 1];
+          if (scBtn) {
+            const scDelay = 2000 + Math.floor(Math.random() * 1000);
+            console.log(`Waiting ${scDelay}ms before clicking Shell card #${i + 1}`);
+            await new Promise(res => setTimeout(res, scDelay));
+            await clickButtonFromComponent(lastButtonMessage, scBtn);
+            console.log(`Clicked Shell card #${i + 1}`);
           }
         }
-
-        lastButtonMessage = null;
-        lastSDMessage = null;
       };
 
       const randomDelay = Math.floor(Math.random() * (800 - 300 + 1)) + 300;
-      setTimeout(doClicks, randomDelay);
+      setTimeout(async () => {
+        if (bestCard) {
+          const bestBtn = interactiveButtons[bestCard.button - 1];
+          if (bestBtn) {
+            await clickButtonFromComponent(lastButtonMessage, bestBtn);
+            console.log(`Clicked best card: ${bestCard.cardName}`);
+          }
+        }
+        if (shellCards.length > 0) await clickShells();
+
+        lastButtonMessage = null;
+        lastSDMessage = null;
+      }, randomDelay);
     }
   } catch (err) {
     console.error('[UNEXPECTED]', err);
