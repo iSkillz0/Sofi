@@ -1,5 +1,15 @@
 require('dotenv').config();
 
+/**
+ * Sofi/Nori autoclicker logic
+ * Priority:
+ * 1) Instantly grab any V card
+ * 2) Else grab a card with hearts > 80
+ * 3) Else grab the lowest g card
+ * After picking the best card, click ALL Shell cards (if present).
+ * If all three are Shell, click all of them.
+ */
+
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('discord.js-selfbot-v13');
@@ -63,7 +73,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // Cache Sofi button message
+    // Cache Sofi button message tied to our last SD
     if (
       message.author.id === SOFI_BOT_ID &&
       message.guild &&
@@ -95,29 +105,29 @@ client.on('messageCreate', async (message) => {
       lastButtonMessage
     ) {
       const lines = message.content.split('\n').filter(line => line.includes(']'));
-      let cards = [];
+      const cards = [];
 
-      for (const line of lines) {
-        const cleanLine = line.replace(/`/g, '').trim();
+      for (const raw of lines) {
+        const clean = raw.replace(/`/g, '').trim();
 
-        const buttonMatch = cleanLine.match(/(\d)\]/);
-        const heartMatch = cleanLine.match(/:heart:\s*(\d*)/); // allow empty
-        const genMatch = cleanLine.match(/([vɢ])\s*(\d*)/i);
-        const nameMatch = cleanLine.match(/\*\*(.*?)\*\*/);
-        const animeMatch = (cleanLine.split('•') || []).slice(-1)[0]?.trim();
+        const buttonMatch = clean.match(/(\d)\]/);
+        const heartMatch = clean.match(/:heart:\s*(\d*)/); // allow empty
+        const genMatch = clean.match(/([vɢ])\s*(\d*)/i);
+        const nameMatch = clean.match(/\*\*(.*?)\*\*/);
+        const animeMatch = (clean.split('•') || []).slice(-1)[0]?.trim();
 
         if (buttonMatch && genMatch) {
           const button = parseInt(buttonMatch[1]);
-          const hearts = heartMatch ? parseInt(heartMatch[1] || "0") : 0;
-          const genType = genMatch[1];
-          const gen = parseInt(genMatch[2] || "0");
+          const hearts = heartMatch ? parseInt(heartMatch[1] || '0') : 0;
+          const genType = (genMatch[1] || '').toLowerCase();
+          const gen = parseInt(genMatch[2] || '0');
 
           cards.push({
             button,
-            hearts,
-            gen,
+            hearts: isNaN(hearts) ? 0 : hearts,
+            gen: isNaN(gen) ? 0 : gen,
             genType,
-            cardName: nameMatch?.[1] || 'Unknown',
+            cardName: (nameMatch?.[1] || 'Unknown').trim(),
             animeName: animeMatch || 'Unknown'
           });
         }
@@ -130,28 +140,27 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Shell + Non-Shell split
+      // Split Shell vs Non-Shell
       const shellCards = cards.filter(c => c.cardName.toLowerCase() === 'shell');
       const nonShellCards = cards.filter(c => c.cardName.toLowerCase() !== 'shell');
 
-      let bestCard;
+      let bestCard = null;
 
-      // Priority 1: V-cards
-      const vCards = nonShellCards.filter(c => c.genType.toLowerCase() === 'v');
-      if (vCards.length > 0) {
-        bestCard = vCards[0];
-      } 
-      // Priority 2: high-heart cards
-      else {
-        const highHeartCards = nonShellCards.filter(c => c.hearts > 70);
-        if (highHeartCards.length > 0) {
-          bestCard = highHeartCards.sort((a, b) => b.hearts - a.hearts || a.gen - b.gen)[0];
-        } 
-        // Priority 3: fallback → lowest gen card
-        else if (nonShellCards.length > 0) {
-          bestCard = nonShellCards.sort((a, b) => a.gen - b.gen || a.button - b.button)[0];
-        }
-      }
+// 1) V-card instant priority
+const vCards = nonShellCards.filter(c => c.genType === 'v');
+if (vCards.length > 0) {
+  // Sort by gen descending (optional, pick strongest V)
+  bestCard = vCards.sort((a, b) => b.gen - a.gen || a.button - b.button)[0];
+} else {
+  // 2) Highest hearts > 80
+  const highHeartCards = nonShellCards.filter(c => c.hearts > 100);
+  if (highHeartCards.length > 0) {
+    bestCard = highHeartCards.sort((a, b) => (b.hearts - a.hearts) || (a.gen - b.gen) || (a.button - b.button))[0];
+  } else if (nonShellCards.length > 0) {
+    // 3) Lowest g
+    bestCard = nonShellCards.sort((a, b) => (a.gen - b.gen) || (a.button - b.button))[0];
+  }
+}
 
       if (!bestCard && shellCards.length > 0) {
         console.log('[INFO] Only Shell cards found, will click all of them.');
@@ -174,15 +183,24 @@ client.on('messageCreate', async (message) => {
         }
       };
 
-      const randomDelay = Math.floor(Math.random() * (800 - 300 + 1)) + 300;
+      // Faster reaction for V-cards, otherwise normal small delay
+      const randomDelay = (bestCard && bestCard.genType === 'v')
+        ? Math.floor(Math.random() * (300 - 100 + 1)) + 100
+        : Math.floor(Math.random() * (800 - 300 + 1)) + 300;
+
       setTimeout(async () => {
+        // Click best card if exists
         if (bestCard) {
           const bestBtn = interactiveButtons[bestCard.button - 1];
           if (bestBtn) {
             await clickButtonFromComponent(lastButtonMessage, bestBtn);
-            console.log(`Clicked best card: ${bestCard.cardName}`);
+            console.log(`Clicked best card: ${bestCard.cardName} (hearts=${bestCard.hearts}, g=${bestCard.gen}, type=${bestCard.genType})`);
+          } else {
+            console.log('[WARN] Best card button not found in interactiveButtons.');
           }
         }
+
+        // After best card (or if only shells), click every Shell
         if (shellCards.length > 0) await clickShells();
 
         lastButtonMessage = null;
@@ -196,12 +214,14 @@ client.on('messageCreate', async (message) => {
 
 async function clickButtonFromComponent(message, buttonComponent) {
   try {
-    if (!buttonComponent || !buttonComponent.customId) return console.log('Button component invalid or has no customId.');
+    if (!buttonComponent || !buttonComponent.customId) {
+      return console.log('Button component invalid or has no customId.');
+    }
 
     const nonce = Date.now().toString();
     const payload = {
       type: 3,
-      nonce: nonce,
+      nonce,
       session_id: sessionId,
       guild_id: message.guildId,
       channel_id: message.channelId,
