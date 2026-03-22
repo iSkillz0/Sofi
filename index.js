@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client } = require('discord.js-selfbot-v13');
-
+const port = process.env.PORT || 4000 
 const client = new Client();
 
 // Configuration from environment variables
