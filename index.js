@@ -47,7 +47,6 @@ server.on('error', (err) => {
   console.error('❌ HTTP server error:', err);
 });
 
-const SOFI_BOT_ID = process.env.SOFI_BOT_ID;
 const COOLDOWN_TIME = 8 * 60 * 1000; // 8 minutes in milliseconds
 let lastCardPickTime = 0;
 let isWaitingForResponse = false;
