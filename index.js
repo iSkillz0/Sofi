@@ -4,6 +4,35 @@ const { Client } = require('discord.js-selfbot-v13');
 const port = process.env.PORT || 4000;
 const client = new Client();
 
+// Configuration from environment variables
+const config = {
+  token: process.env.DISCORD_TOKEN,
+  channelId: process.env.CHANNEL_ID,
+};
+
+const SOFI_BOT_ID = process.env.SOFI_BOT_ID;
+
+function validateConfig() {
+  const missing = [];
+  if (!config.token) missing.push('DISCORD_TOKEN');
+  if (!config.channelId) missing.push('CHANNEL_ID');
+  if (!SOFI_BOT_ID) missing.push('SOFI_BOT_ID');
+
+  if (missing.length > 0) {
+    console.error(`❌ Missing environment variables: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+
+  console.log('⚙️ Config loaded:', {
+    channelId: config.channelId,
+    hasToken: !!config.token,
+    hasSofiBotId: !!SOFI_BOT_ID,
+    port,
+  });
+}
+
+validateConfig();
+
 // Small HTTP server required by Render for port binding
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -17,12 +46,6 @@ server.listen(port, () => {
 server.on('error', (err) => {
   console.error('❌ HTTP server error:', err);
 });
-
-// Configuration from environment variables
-const config = {
-  token: process.env.DISCORD_TOKEN,
-  channelId: process.env.CHANNEL_ID,
-};
 
 const SOFI_BOT_ID = process.env.SOFI_BOT_ID;
 const COOLDOWN_TIME = 8 * 60 * 1000; // 8 minutes in milliseconds
@@ -260,4 +283,12 @@ function selectBestCard(cardData) {
   return lowestGenCard.index;
 }
 
-client.login(config.token);
+client.login(config.token)
+  .then(() => {
+    console.log('🔐 Discord login started. Waiting for ready event...');
+  })
+  .catch((loginError) => {
+    console.error('❌ Discord login failed:', loginError);
+    process.exit(1);
+  });
+
