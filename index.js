@@ -1,7 +1,22 @@
 require('dotenv').config();
+const http = require('http');
 const { Client } = require('discord.js-selfbot-v13');
-const port = process.env.PORT || 4000 
+const port = process.env.PORT || 4000;
 const client = new Client();
+
+// Small HTTP server required by Render for port binding
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Sofi card bot is running');
+});
+
+server.listen(port, () => {
+  console.log(`🌐 Render port bound on ${port}`);
+});
+
+server.on('error', (err) => {
+  console.error('❌ HTTP server error:', err);
+});
 
 // Configuration from environment variables
 const config = {
@@ -17,109 +32,124 @@ let isWaitingForResponse = false;
 client.on('ready', () => {
   console.log(`✅ Bot logged in as ${client.user.username}`);
   console.log('🎴 Starting the Sofi card automation...');
-  
-  // Send initial 'sd' command
-  sendSdCommand();
+
+  if (!config.token || !config.channelId || !SOFI_BOT_ID) {
+    console.error('❌ Missing environment configuration. Set DISCORD_TOKEN, CHANNEL_ID, and SOFI_BOT_ID.');
+    process.exit(1);
+  }
+
+  // Start fixed-interval 'sd' command, regardless of click results
+  startSdLoop();
 });
 
+function startSdLoop() {
+  // Immediate first call
+  sendSdCommand();
+
+  // Then run every COOLDOWN_TIME
+  setInterval(() => {
+    sendSdCommand();
+  }, COOLDOWN_TIME);
+}
+
 async function sendSdCommand() {
-  // Prevent double sends
-  if (isWaitingForResponse) {
-    console.log('⚠️ Already waiting for response, skipping sd send');
-    return;
-  }
-  
   try {
     const channel = await client.channels.fetch(config.channelId);
-    
+
     if (!channel) {
       console.error('❌ Channel not found. Please check your CHANNEL_ID in config.');
       return;
     }
-    
-    console.log('\n📤 Sending "sd" command...');
+
+    console.log('📤 Sending "sd" command...');
     await channel.send('sd');
     isWaitingForResponse = true;
-    console.log('⏳ Waiting for Sofi bot response...');
   } catch (error) {
     console.error('❌ Error sending sd command:', error);
   }
 }
 
 client.on('messageCreate', async (message) => {
-  // Only process messages in the target channel
-  if (message.channelId !== config.channelId) return;
-  
-  // Log ALL messages for debugging
-  console.log(`\n📨 [${message.author.username}] ID: ${message.author.id}`);
-  console.log(`   Embeds: ${message.embeds.length}, Components: ${message.components.length}`);
-  if (message.content) console.log(`   Content: ${message.content}`);
-  
-  // Only process if waiting AND from Sofi bot
-  if (!isWaitingForResponse || message.author.id !== SOFI_BOT_ID) return;
-  
+  // Only process messages in the target channel from Sofi bot
+  if (message.channelId !== config.channelId || message.author.id !== SOFI_BOT_ID) return;
+
   // Skip messages with no components (buttons)
   if (!message.components || message.components.length === 0) {
-    console.log('   ⚠️ Skipping - no buttons');
+    console.log('⚠️ Received Sofi message with no buttons, waiting for next schedule.');
+    isWaitingForResponse = false;
     return;
   }
-  
-  try {
-    console.log('   🎴 Processing card message with buttons...');
-    const cardData = parseCardData(message);
-    
-    if (cardData && cardData.length > 0) {
-      const selectedCard = selectBestCard(cardData);
-      
-      if (selectedCard !== null) {
-        const card = cardData[selectedCard];
-        console.log(`✅ Selected: Card ${selectedCard + 1} (Gen ${card.gen}, Heart ${card.heart})`);
-        
-        if (message.components && message.components.length > 0) {
-          let buttonClicked = false;
-          
-          for (let rowIdx = 0; rowIdx < message.components.length && !buttonClicked; rowIdx++) {
-            const row = message.components[rowIdx];
-            if (row.components && row.components[selectedCard]) {
-              const button = row.components[selectedCard];
-              console.log(`🖱️ Attempting to click button:`, {
-                label: button.label,
-                customId: button.customId,
-                style: button.style,
-                type: button.type
-              });
-              
-              try {
-                await message.clickButton(button);
-                console.log(`✅ Button clicked!`);
-                isWaitingForResponse = false;
-                setTimeout(sendSdCommand, COOLDOWN_TIME);
-                buttonClicked = true;
-              } catch (err) {
-                console.error(`❌ Click failed: ${err.message}`);
-                // Try alternative method if available
-                if (button.customId) {
-                  try {
-                    console.log(`🔄 Trying with customId: ${button.customId}`);
-                    await message.clickButton(button.customId);
-                    console.log(`✅ Button clicked with customId!`);
-                    isWaitingForResponse = false;
-                    setTimeout(sendSdCommand, COOLDOWN_TIME);
-                    buttonClicked = true;
-                  } catch (err2) {
-                    console.error(`❌ Click with customId also failed: ${err2.message}`);
-                  }
-                }
+
+  const cardData = parseCardData(message);
+  if (!cardData || cardData.length === 0) {
+    console.log('⚠️ No card data parsed, waiting for next schedule.');
+    isWaitingForResponse = false;
+    return;
+  }
+
+  const selectedCard = selectBestCard(cardData);
+  if (selectedCard === null) {
+    console.log('⚠️ No suitable card selected, waiting for next schedule.');
+    isWaitingForResponse = false;
+    return;
+  }
+
+  const card = cardData[selectedCard];
+
+  let buttonClicked = false;
+  for (let rowIdx = 0; rowIdx < message.components.length && !buttonClicked; rowIdx++) {
+    const row = message.components[rowIdx];
+    if (row.components && row.components[selectedCard]) {
+      const button = row.components[selectedCard];
+
+      try {
+        // click by customId first (preferred for most interactions)
+        if (button.customId && typeof message.clickButton === 'function') {
+          await message.clickButton(button.customId);
+        } else if (button.customId && client.api && client.api.interactions) {
+          await client.api.interactions.post({
+            data: {
+              type: 3,
+              data: {
+                custom_id: button.customId,
+                component_type: button.type || 2
               }
             }
+          });
+        } else if (typeof message.clickButton === 'function') {
+          await message.clickButton(button);
+        } else if (typeof button.click === 'function') {
+          await button.click();
+        } else {
+          throw new Error('No supported click method available');
+        }
+
+        console.log(`✅ Button clicked!`);
+        isWaitingForResponse = false;
+        buttonClicked = true;
+      } catch (err) {
+        console.error(`❌ Click failed: ${err.message}`);
+        // fallback to direct button click by customId if initial path did not use it
+        if (button.customId && typeof message.clickButton === 'function') {
+          try {
+            await message.clickButton(button.customId);
+            console.log(`✅ Button clicked with fallback!`);
+            isWaitingForResponse = false;
+            buttonClicked = true;
+          } catch (err2) {
+            console.error(`❌ Fallback also failed: ${err2.message}`);
+            isWaitingForResponse = false;
           }
-          
-          if (!buttonClicked) console.error('❌ Could not click button');
+        } else {
+          isWaitingForResponse = false;
         }
       }
     }
-  } catch (error) {
-    console.error('❌ Error:', error.message);
+  }
+
+  if (!buttonClicked) {
+    console.error('❌ Could not click button');
+    isWaitingForResponse = false;
   }
 });
 
@@ -131,20 +161,24 @@ function parseCardData(message) {
   const cards = [];
   
   try {
-    console.log(`📋 Total components: ${message.components.length}`);
-    
     // Split message content into lines and parse each card line
-    const lines = message.content.split('\n').filter(line => line.trim());
-    console.log(`📝 Found ${lines.length} lines in message`);
+    const rawText = message.content || (message.embeds && message.embeds.map(e => e.description || '').join('\n')) || '';
+    const lines = rawText.split('\n').filter(line => line.trim());
     
-    // Filter for card lines that start with numbered format (1., 2., 3.)
-    const cardLines = lines.filter(line => /^\s*`\d+\.`/.test(line));
-    console.log(`🎴 Found ${cardLines.length} card lines`);
+    // Filter for card lines that start with numbered format (1., 2., 3.) or with backticks like `1.`
+    const cardLines = lines.filter(line => /^\s*(?:`)?\s*\d+\./.test(line));
+
+    if (cardLines.length === 0) {
+      // Fallback: maybe the card line is not numbered and only contains 'Gen' and 'Heart'
+      const fallbackCardLines = lines.filter(line => /gen\s*[:=]?\s*\d+/i.test(line) && /heart\s*[:=]?\s*\d+/i.test(line));
+      if (fallbackCardLines.length > 0) {
+        fallbackCardLines.slice(0, 3).forEach(l => cardLines.push(l));
+      }
+    }
     
     // Parse each card from the filtered card lines
     for (let i = 0; i < Math.min(3, cardLines.length); i++) {
       const line = cardLines[i].trim();
-      console.log(`\n🎴 Processing card ${i + 1}: ${line}`);
       
       const cardInfo = {
         gen: null,
@@ -153,10 +187,9 @@ function parseCardData(message) {
       };
       
       // Extract Gen from this specific line
-      const genMatch = line.match(/G•`(\d+)\s*`/);
+      const genMatch = line.match(/G•\s*`?(\d+)`?/i);
       if (genMatch) {
         cardInfo.gen = parseInt(genMatch[1]);
-        console.log(`   ✓ Gen found: ${cardInfo.gen}`);
       }
       
       // Parse corresponding button for heart values
@@ -165,8 +198,6 @@ function parseCardData(message) {
         const row = message.components[rowIdx];
         if (row.components && row.components[i]) {
           const button = row.components[i];
-          console.log(`   Button ${i} label: "${button.label}"`);
-          console.log(`   Button ${i} emoji: ${button.emoji}`);
           
           if (button.label) {
             // Try different heart patterns
@@ -180,12 +211,10 @@ function parseCardData(message) {
             if (!heartMatch) {
               // If no heart emoji found, use the number as heart value
               heartMatch = button.label.match(/(\d+)/);
-              console.log(`   ⚠️ Using raw number as heart: ${button.label}`);
             }
             
             if (heartMatch) {
               cardInfo.heart = parseInt(heartMatch[1]);
-              console.log(`   ✓ Heart found: ${cardInfo.heart}`);
               buttonFound = true;
             }
           }
@@ -194,9 +223,6 @@ function parseCardData(message) {
       
       if (cardInfo.gen !== null && cardInfo.heart !== null) {
         cards.push(cardInfo);
-        console.log(`   ✅ Card ${i + 1} complete: Gen ${cardInfo.gen}, Heart ${cardInfo.heart}`);
-      } else {
-        console.log(`   ❌ Card ${i + 1} incomplete: Gen ${cardInfo.gen}, Heart ${cardInfo.heart}`);
       }
     }
   } catch (error) {
