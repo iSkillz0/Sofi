@@ -1,6 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 
 const STATE_FILE = path.resolve(__dirname, 'bot-state.json');
@@ -154,6 +155,41 @@ function delay(ms) {
 }
 
 const client = new Client();
+
+// 🌐 Background Helper Server on port 4000
+const app = express();
+app.use(express.json());
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    botConnected: client.isReady(),
+    state: {
+      lastSdTime: state.lastSdTime,
+      pendingResponse: state.pendingResponse,
+      lastAction: state.lastAction,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/state', (req, res) => {
+  res.json(state);
+});
+
+app.post('/trigger-sd', (req, res) => {
+  if (state.pendingResponse) {
+    return res.status(400).json({ error: 'Pending response still active' });
+  }
+  console.log('🔔 External trigger received for sd command');
+  sendSdCommand();
+  res.json({ success: true, message: 'sd command triggered' });
+});
+
+const HELPER_PORT = 4000;
+app.listen(HELPER_PORT, () => {
+  console.log(`🌐 Background helper server listening on port ${HELPER_PORT}`);
+});
 
 client.on('ready', () => {
   console.log(`✅ Bot logged in as ${client.user.username}`);
